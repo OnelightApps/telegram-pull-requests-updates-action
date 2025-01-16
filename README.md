@@ -24,7 +24,7 @@ You can include this action in your workflow as follow
 
 ```yml
 - name: Pull Request Telegram Updates
-  uses: Another1dd/pr_updates_telegram_action@v1.1.0
+  uses: OnelightApps/telegram-pull-requests-updates-action@v1.4.0
   with: 
     bot_token: '${{ secrets.BotToken }}' # Your bot token from github secrets
     chat_id: '${{ secrets.CHATID }}' # Your chat id from github secrets
