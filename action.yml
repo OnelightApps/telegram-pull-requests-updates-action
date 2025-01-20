@@ -1,4 +1,4 @@
-name: 'Pull Request Updates Telegram'
+name: 'Telegram Pull Request updates'
 description: 'Sends a message to a Telegram channel when a pull request is updated'
 author: 'Another1DD'
 inputs:
