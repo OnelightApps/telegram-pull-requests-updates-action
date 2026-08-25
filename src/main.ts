@@ -132,6 +132,7 @@ const formatPullRequestReviewMessage = (payload: PullRequestReviewEvent): string
   const repoName = escapeMarkdown(name);
   const senderName = escapeMarkdown(sender.login);
   const prState = escapeMarkdown(state);
+  const reviewText = escapeMarkdown(body ?? "");
 
   let message = "";
 
@@ -141,7 +142,7 @@ const formatPullRequestReviewMessage = (payload: PullRequestReviewEvent): string
       *PR Title:* ${prTitle}
       *By:* [${senderName}](https://github.com/${senderName})
       *Status: ${prState}*
-      *Text: ${body ?? ""}*
+      *Text: ${reviewText}*
       [View Review](${html_url})
       [View Pull Request](https://github.com/${ownerName}/${repoName}/pull/${number})
       `;
@@ -162,7 +163,7 @@ const formatPullRequestReviewMessage = (payload: PullRequestReviewEvent): string
       *PR Title:* ${prTitle}
       *By:* [${senderName}](https://github.com/${senderName})
       *Status: ${prState}*
-      *Text: ${body ?? ""}*
+      *Text: ${reviewText}*
       [View Review](${html_url})
       [View Pull Request](https://github.com/${ownerName}/${repoName}/pull/${number})
       `;
@@ -185,6 +186,7 @@ const formatPullRequestReviewCommentMessage = (payload: PullRequestReviewComment
   const ownerName = escapeMarkdown(owner.login);
   const repoName = escapeMarkdown(name);
   const senderName = escapeMarkdown(sender.login);
+  const commentText = escapeMarkdown(body ?? "");
 
   let message = "";
 
@@ -193,14 +195,14 @@ const formatPullRequestReviewCommentMessage = (payload: PullRequestReviewComment
       message = `📝 *New comment* \\\#${number}
       *PR Title:* ${prTitle}
       *By:* [${senderName}](https://github.com/${senderName})
-      *Text: ${body}*
+      *Text: ${commentText}*
       [View Comment](${html_url})
       [View Pull Request](https://github.com/${ownerName}/${repoName}/pull/${number})
       `;
       console.debug("Message: ", message);
       return message;
 
-    case "deleted": 
+    case "deleted":
       message = `🗑 *Comment deleted* \\\#${number}
       *PR Title:* ${prTitle}
       *By:* [${senderName}](https://github.com/${senderName})
@@ -213,7 +215,7 @@ const formatPullRequestReviewCommentMessage = (payload: PullRequestReviewComment
       message = `✏️ *Comment edited* \\\#${number}
       *PR Title:* ${prTitle}
       *By:* [${senderName}](https://github.com/${senderName})
-      *Text: ${body}*
+      *Text: ${commentText}*
       [View Comment](${html_url})
       [View Pull Request](https://github.com/${ownerName}/${repoName}/pull/${number})
       `;
@@ -230,7 +232,7 @@ const formatPullRequestReviewCommentMessage = (payload: PullRequestReviewComment
   ignore pre and code entities as we do not use.
 */
 const escapeMarkdown = (text: string): string => {
-  return text.replace(/([_*\[\]()~`>#+-=|{}\.!])/g, "\\$1");
+  return text.replace(/([_*\[\]()~`>#+\-=|{}.!])/g, "\\$1");
 };
 
 run();
