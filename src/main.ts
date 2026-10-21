@@ -3,6 +3,8 @@ import * as github from "@actions/github";
 import sendMessage from "./send_message";
 import { PullRequestEvent, PullRequestReviewEvent, PullRequestReviewCommentEvent } from "@octokit/webhooks-types";
 import { User } from "@octokit/webhooks-types";
+import telegramifyMarkdown from "telegramify-markdown";
+import axios from "axios";
 
 async function run(): Promise<void> {
   try {
@@ -15,24 +17,17 @@ async function run(): Promise<void> {
     }
 
     const uri = `https://api.telegram.org/bot${botToken}/sendMessage`;
-    let message = "";
+    const message = buildMessage();
 
-    if (github.context.eventName == "pull_request") {
-      const payload = github.context.payload as PullRequestEvent;
-      message = formatPullRequestMessage(payload);
-    } else if (github.context.eventName == "pull_request_review") {
-      const payload = github.context.payload as PullRequestReviewEvent;
-      message = formatPullRequestReviewMessage(payload);
-    } else if (github.context.eventName == "pull_request_review_comment") {
-      const payload = github.context.payload as PullRequestReviewCommentEvent
-      message = formatPullRequestReviewCommentMessage(payload);
-    } else {
-      throw new Error(
-        "This action only works on pull_request & pull_request_review & pull_request_review_comment events"
-      );
+    try {
+      await sendMessage(chatId, topicId, message, uri);
+    } catch (error) {
+      // Telegram rejects broken entities with 400, so resend with plain escaped text.
+      if (!axios.isAxiosError(error) || error.response?.status !== 400) throw error;
+      console.debug("Rich text rejected, resending escaped: ", error.response?.data);
+      richText = false;
+      await sendMessage(chatId, topicId, buildMessage(), uri);
     }
-
-    await sendMessage(chatId, topicId, message, uri);
 
     core.debug(`Message sent!`);
     core.setOutput("Finshed time", new Date().toTimeString());
@@ -43,14 +38,32 @@ async function run(): Promise<void> {
   }
 }
 
+// Rebuilt on fallback, so keep it free of side effects.
+const buildMessage = (): string => {
+  if (github.context.eventName == "pull_request") {
+    const payload = github.context.payload as PullRequestEvent;
+    return formatPullRequestMessage(payload);
+  } else if (github.context.eventName == "pull_request_review") {
+    const payload = github.context.payload as PullRequestReviewEvent;
+    return formatPullRequestReviewMessage(payload);
+  } else if (github.context.eventName == "pull_request_review_comment") {
+    const payload = github.context.payload as PullRequestReviewCommentEvent
+    return formatPullRequestReviewCommentMessage(payload);
+  } else {
+    throw new Error(
+      "This action only works on pull_request & pull_request_review & pull_request_review_comment events"
+    );
+  }
+};
+
 // Format the pull request message based on the event type, new pull or review request.
 const formatPullRequestMessage = (payload: PullRequestEvent): string => {
   const { action, pull_request, repository, sender, number } = payload;
   const { name, owner } = repository;
   const { title, body, draft } = pull_request;
 
-  const prTitle = escapeMarkdown(title);
-  const prDescription = escapeMarkdown(body ?? "");
+  const prTitle = formatTitle(title);
+  const prDescription = formatBody(body);
   const ownerName = escapeMarkdown(owner.login);
   const repoName = escapeMarkdown(name);
   const senderName = escapeMarkdown(sender.login);
@@ -61,7 +74,8 @@ const formatPullRequestMessage = (payload: PullRequestEvent): string => {
     case "opened":
       message = `🚀*Opened* \\\#${number}
       *PR Title:* ${prTitle}
-      *PR Description:* ${prDescription}
+      *PR Description:*
+      ${prDescription}
       *Draft:* ${draft}
       *By:* [${senderName}](https://github.com/${senderName})
       [View Pull Request](https://github.com/${ownerName}/${repoName}/pull/${number})
@@ -127,12 +141,12 @@ const formatPullRequestReviewMessage = (payload: PullRequestReviewEvent): string
   const { title, number, draft } = pull_request;
   const { body, html_url, state } = review;
 
-  const prTitle = escapeMarkdown(title);
+  const prTitle = formatTitle(title);
   const ownerName = escapeMarkdown(owner.login);
   const repoName = escapeMarkdown(name);
   const senderName = escapeMarkdown(sender.login);
   const prState = escapeMarkdown(state);
-  const reviewText = escapeMarkdown(body ?? "");
+  const reviewText = formatBody(body);
 
   let message = "";
 
@@ -142,7 +156,7 @@ const formatPullRequestReviewMessage = (payload: PullRequestReviewEvent): string
       *PR Title:* ${prTitle}
       *By:* [${senderName}](https://github.com/${senderName})
       *Status: ${prState}*
-      *Text: ${reviewText}*
+      *Text:* ${reviewText}
       [View Review](${html_url})
       [View Pull Request](https://github.com/${ownerName}/${repoName}/pull/${number})
       `;
@@ -163,7 +177,7 @@ const formatPullRequestReviewMessage = (payload: PullRequestReviewEvent): string
       *PR Title:* ${prTitle}
       *By:* [${senderName}](https://github.com/${senderName})
       *Status: ${prState}*
-      *Text: ${reviewText}*
+      *Text:* ${reviewText}
       [View Review](${html_url})
       [View Pull Request](https://github.com/${ownerName}/${repoName}/pull/${number})
       `;
@@ -182,11 +196,11 @@ const formatPullRequestReviewCommentMessage = (payload: PullRequestReviewComment
   const { title, number } = pull_request;
   const { body, html_url } = comment;
 
-  const prTitle = escapeMarkdown(title);
+  const prTitle = formatTitle(title);
   const ownerName = escapeMarkdown(owner.login);
   const repoName = escapeMarkdown(name);
   const senderName = escapeMarkdown(sender.login);
-  const commentText = escapeMarkdown(body ?? "");
+  const commentText = formatBody(body);
 
   let message = "";
 
@@ -195,7 +209,7 @@ const formatPullRequestReviewCommentMessage = (payload: PullRequestReviewComment
       message = `📝 *New comment* \\\#${number}
       *PR Title:* ${prTitle}
       *By:* [${senderName}](https://github.com/${senderName})
-      *Text: ${commentText}*
+      *Text:* ${commentText}
       [View Comment](${html_url})
       [View Pull Request](https://github.com/${ownerName}/${repoName}/pull/${number})
       `;
@@ -215,7 +229,7 @@ const formatPullRequestReviewCommentMessage = (payload: PullRequestReviewComment
       message = `✏️ *Comment edited* \\\#${number}
       *PR Title:* ${prTitle}
       *By:* [${senderName}](https://github.com/${senderName})
-      *Text: ${commentText}*
+      *Text:* ${commentText}
       [View Comment](${html_url})
       [View Pull Request](https://github.com/${ownerName}/${repoName}/pull/${number})
       `;
@@ -225,6 +239,34 @@ const formatPullRequestReviewCommentMessage = (payload: PullRequestReviewComment
     default:
       throw new Error(`Unsupported action: ${action}`);
   }
+};
+
+let richText = true;
+
+// Leaves room under Telegram's 4096 limit for the rest of the message and escaping growth.
+const MAX_BODY_LENGTH = 1500;
+
+// GitHub titles have no markdown except `code`, so only that is kept as an entity.
+const formatTitle = (text: string): string => {
+  if (!richText) return escapeMarkdown(text);
+
+  return text
+    .split(/(`[^`]+`)/)
+    .map((part) =>
+      /^`[^`]+`$/.test(part)
+        ? "`" + part.slice(1, -1).replace(/([\\`])/g, "\\$1") + "`"
+        : escapeMarkdown(part)
+    )
+    .join("");
+};
+
+// Converts GitHub markdown (links, bold, code...) to Telegram MarkdownV2.
+const formatBody = (text: string | null | undefined): string => {
+  const source = text ?? "";
+  if (!richText) return escapeMarkdown(source);
+
+  const clipped = source.length > MAX_BODY_LENGTH ? source.slice(0, MAX_BODY_LENGTH) + "…" : source;
+  return telegramifyMarkdown(clipped, "escape").trim();
 };
 
 /*Escape markdown characters based on
