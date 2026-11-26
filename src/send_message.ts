@@ -41,6 +41,8 @@ const sendMessage = async (
           text: message,
           parse_mode: "Markdownv2",
         },
+        // A stalled connection would otherwise hang until the job's timeout.
+        { timeout: 15000 },
       );
     } catch (error) {
       const wait = retryDelay(error, attempt);

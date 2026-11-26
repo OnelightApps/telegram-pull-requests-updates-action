@@ -1,6 +1,6 @@
 const test = require("node:test");
 const assert = require("node:assert");
-const { singleComment, formatCommentList } = require("../lib/review");
+const { singleComment, formatCommentList, escapeMarkdown, clip } = require("../lib/review");
 const { retryDelay } = require("../lib/send_message");
 
 const comment = (n, extra = {}) => ({ body: `**Finding** ${n}.\nDetails`, path: "Sources/A.swift", html_url: `https://x/c${n}`, ...extra });
@@ -26,7 +26,16 @@ test("the list shows the first comments and counts the rest", () => {
   assert.match(list, /…and 21 more$/);
   assert.strictEqual(formatCommentList([]), "");
   assert.strictEqual(formatCommentList([comment(1), comment(2)], 0), "*Comments \\(2\\):*\n…and 2 more");
-  assert.ok(formatCommentList([comment(1, { body: "`feed_age_days` is __wrong__" })]).includes("feed\\_age\\_days is wrong"));
+  assert.ok(formatCommentList([comment(1, { body: "`feed_age_days` is **wrong**" })]).includes("feed\\_age\\_days is wrong"));
+});
+
+test("escaping and clipping keep MarkdownV2 valid", () => {
+  assert.strictEqual(escapeMarkdown("a\\.b"), "a\\\\\\.b");
+  assert.strictEqual(clip("ab😀c", 3), "ab😀…");
+  assert.strictEqual(clip("ab😀", 2), "ab…");
+  const list = formatCommentList([comment(1, { body: "```suggestion\nUse `__init__` here **now**" })]);
+  assert.ok(list.includes(") Use \\_\\_init\\_\\_ here now"), list);
+  assert.ok(formatCommentList([comment(1, { body: "<!-- marker -->\nReal text" })]).includes(") Real text"));
 });
 
 const axiosError = (status, data) => ({ isAxiosError: true, response: status && { status, data } });

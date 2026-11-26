@@ -51,4 +51,6 @@ A review is sent as one message. Every inline comment also fires `pull_request_r
 first 5, then a count). A thread reply or a single comment is a review with no text and one
 comment, and is sent as that comment. Reading the comments uses `github_token` (default
 `github.token`, needs `pull-requests: read`); without that access every event is sent on its own,
-as in 1.6.0. A Telegram 429 is retried after the `retry_after` it returns.
+as in 1.6.0. A Telegram 429 is retried after the `retry_after` it returns. Listen to both
+`pull_request_review` and `pull_request_review_comment`: with only the latter, new comments are
+skipped and never sent.

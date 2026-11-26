@@ -15,7 +15,7 @@ const EXCERPT_LENGTH = 150;
   ignore pre and code entities as we do not use.
 */
 export const escapeMarkdown = (text: string): string => {
-  return text.replace(/([_*\[\]()~`>#+\-=|{}.!])/g, "\\$1");
+  return text.replace(/([\\_*\[\]()~`>#+\-=|{}.!])/g, "\\$1");
 };
 
 // Inside a code entity only ` and \ need escaping.
@@ -31,8 +31,17 @@ export const singleComment = (
     ? comments[0]
     : undefined;
 
+// Cuts by code point, so an emoji is never split into a lone surrogate Telegram rejects.
+export const clip = (text: string, length: number): string => {
+  const chars = Array.from(text);
+  return chars.length > length ? chars.slice(0, length).join("") + "…" : text;
+};
+
+// Fences (```suggestion) and HTML comments make poor excerpts, so the first prose line is used.
 const plainLine = (line: string): string =>
-  line.replace(/^[#>\s]+/, "").replace(/\*\*|__|~~|`/g, "").trim();
+  /^\s*(```|<!--)/.test(line)
+    ? ""
+    : line.replace(/^[#>\s]+/, "").replace(/\*\*(\S.*?)\*\*/g, "$1").replace(/~~(\S.*?)~~/g, "$1").replace(/`/g, "").trim();
 
 // The review comments API has no line numbers, so an entry names the file and links the comment.
 export const formatCommentList = (comments: ReviewComment[], listed = MAX_LISTED_COMMENTS): string => {
@@ -42,7 +51,7 @@ export const formatCommentList = (comments: ReviewComment[], listed = MAX_LISTED
     const file = comment.path.split("/").pop() ?? comment.path;
     // Plain text: a clipped excerpt can't keep its markdown entities balanced.
     const firstLine = comment.body.split("\n").map(plainLine).find((l) => l) ?? "";
-    const excerpt = firstLine.length > EXCERPT_LENGTH ? firstLine.slice(0, EXCERPT_LENGTH) + "…" : firstLine;
+    const excerpt = clip(firstLine, EXCERPT_LENGTH);
     return `• [${escapeMarkdown(file)}](${comment.html_url}) ${escapeMarkdown(excerpt)}`;
   });
   const more = comments.length - lines.length;

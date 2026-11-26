@@ -5,7 +5,7 @@ import { PullRequestEvent, PullRequestReviewEvent, PullRequestReviewCommentEvent
 import { User } from "@octokit/webhooks-types";
 import telegramifyMarkdown from "telegramify-markdown";
 import axios from "axios";
-import { ReviewComment, escapeMarkdown, formatCommentList, formatLocation, singleComment } from "./review";
+import { ReviewComment, clip, escapeMarkdown, formatCommentList, formatLocation, singleComment } from "./review";
 
 async function run(): Promise<void> {
   try {
@@ -25,7 +25,7 @@ async function run(): Promise<void> {
     // Only when that list can't be read does the comment go out on its own, as before.
     if (eventName == "pull_request_review_comment" && payload.action == "created") {
       const reviewId = (payload as PullRequestReviewCommentEvent).comment.pull_request_review_id;
-      if (reviewId && (await reviewComments(token, reviewId, 1))) {
+      if (reviewId && Array.isArray(await reviewComments(token, reviewId, 1))) {
         console.log(`Comment is part of review ${reviewId}; its review message carries it.`);
         return;
       }
@@ -57,32 +57,43 @@ async function run(): Promise<void> {
   }
 }
 
-// The review's inline comments, or undefined when the token can't read them.
+// The review's inline comments; undefined when the token has no access (each comment then
+// goes out on its own), null when reading failed otherwise (the comment runs may have skipped).
 const reviewComments = async (
   token: string,
   reviewId: number,
   perPage = 100
-): Promise<ReviewComment[] | undefined> => {
+): Promise<ReviewComment[] | undefined | null> => {
   if (!token) return undefined;
-  try {
-    const octokit = github.getOctokit(token);
-    const params = {
-      ...github.context.repo,
-      pull_number: github.context.payload.pull_request!.number,
-      review_id: reviewId,
-      per_page: perPage,
-    };
-    return perPage < 100
-      ? (await octokit.rest.pulls.listCommentsForReview(params)).data
-      : await octokit.paginate(octokit.rest.pulls.listCommentsForReview, params);
-  } catch (error) {
-    core.warning(`Could not read the comments of review ${reviewId}, each is sent on its own: ${error}`);
-    return undefined;
+  const octokit = github.getOctokit(token);
+  const params = {
+    ...github.context.repo,
+    pull_number: github.context.payload.pull_request!.number,
+    review_id: reviewId,
+    per_page: perPage,
+  };
+  for (let attempt = 1; ; attempt++) {
+    try {
+      return perPage < 100
+        ? (await octokit.rest.pulls.listCommentsForReview(params)).data
+        : await octokit.paginate(octokit.rest.pulls.listCommentsForReview, params);
+    } catch (error) {
+      const status = (error as { status?: number }).status;
+      if (status === 401 || status === 403 || status === 404) {
+        core.warning(`No access to the comments of review ${reviewId}, each is sent on its own: ${error}`);
+        return undefined;
+      }
+      if (attempt >= 3) {
+        core.warning(`Could not read the comments of review ${reviewId}: ${error}`);
+        return null;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 2000 * attempt));
+    }
   }
 };
 
 // Rebuilt on fallback, so keep it free of side effects.
-const buildEventMessage = (comments: ReviewComment[] | undefined): string => {
+const buildEventMessage = (comments: ReviewComment[] | undefined | null): string => {
   if (github.context.eventName == "pull_request") {
     const payload = github.context.payload as PullRequestEvent;
     return formatPullRequestMessage(payload);
@@ -180,7 +191,7 @@ const formatPullRequestMessage = (payload: PullRequestEvent): string => {
 // Format the pull request review message based on the event type, new pull or review request.
 const formatPullRequestReviewMessage = (
   payload: PullRequestReviewEvent,
-  comments: ReviewComment[] | undefined
+  comments: ReviewComment[] | undefined | null
 ): string => {
   const { action, pull_request, repository, sender, review } = payload;
   const { name, owner } = repository;
@@ -220,7 +231,11 @@ const formatPullRequestReviewMessage = (
       [View Review](${html_url})
       [View Pull Request](https://github.com/${ownerName}/${repoName}/pull/${number})
       `;
-      message = reviewMessage(comments ? formatCommentList(comments) : "");
+      message = reviewMessage(
+        comments === null
+          ? escapeMarkdown("Inline comments could not be listed, open the review.")
+          : comments ? formatCommentList(comments) : ""
+      );
       // Telegram rejects more than 4096 characters; a long review text keeps only the count.
       if (comments && message.length > MAX_MESSAGE_LENGTH) message = reviewMessage(formatCommentList(comments, 0));
       console.debug("Message: ", message);
@@ -326,10 +341,9 @@ const formatTitle = (text: string): string => {
 
 // Converts GitHub markdown (links, bold, code...) to Telegram MarkdownV2.
 const formatBody = (text: string | null | undefined): string => {
-  const source = text ?? "";
-  if (!richText) return escapeMarkdown(source);
+  const clipped = clip(text ?? "", MAX_BODY_LENGTH);
+  if (!richText) return escapeMarkdown(clipped);
 
-  const clipped = source.length > MAX_BODY_LENGTH ? source.slice(0, MAX_BODY_LENGTH) + "…" : source;
   return telegramifyMarkdown(clipped, "escape").trim();
 };
 

@@ -45789,7 +45789,7 @@ async function run() {
         // Only when that list can't be read does the comment go out on its own, as before.
         if (eventName == "pull_request_review_comment" && payload.action == "created") {
             const reviewId = payload.comment.pull_request_review_id;
-            if (reviewId && (await reviewComments(token, reviewId, 1))) {
+            if (reviewId && Array.isArray(await reviewComments(token, reviewId, 1))) {
                 console.log(`Comment is part of review ${reviewId}; its review message carries it.`);
                 return;
             }
@@ -45819,25 +45819,36 @@ async function run() {
             core.setFailed(error.message);
     }
 }
-// The review's inline comments, or undefined when the token can't read them.
+// The review's inline comments; undefined when the token has no access (each comment then
+// goes out on its own), null when reading failed otherwise (the comment runs may have skipped).
 const reviewComments = async (token, reviewId, perPage = 100) => {
     if (!token)
         return undefined;
-    try {
-        const octokit = github.getOctokit(token);
-        const params = {
-            ...github.context.repo,
-            pull_number: github.context.payload.pull_request.number,
-            review_id: reviewId,
-            per_page: perPage,
-        };
-        return perPage < 100
-            ? (await octokit.rest.pulls.listCommentsForReview(params)).data
-            : await octokit.paginate(octokit.rest.pulls.listCommentsForReview, params);
-    }
-    catch (error) {
-        core.warning(`Could not read the comments of review ${reviewId}, each is sent on its own: ${error}`);
-        return undefined;
+    const octokit = github.getOctokit(token);
+    const params = {
+        ...github.context.repo,
+        pull_number: github.context.payload.pull_request.number,
+        review_id: reviewId,
+        per_page: perPage,
+    };
+    for (let attempt = 1;; attempt++) {
+        try {
+            return perPage < 100
+                ? (await octokit.rest.pulls.listCommentsForReview(params)).data
+                : await octokit.paginate(octokit.rest.pulls.listCommentsForReview, params);
+        }
+        catch (error) {
+            const status = error.status;
+            if (status === 401 || status === 403 || status === 404) {
+                core.warning(`No access to the comments of review ${reviewId}, each is sent on its own: ${error}`);
+                return undefined;
+            }
+            if (attempt >= 3) {
+                core.warning(`Could not read the comments of review ${reviewId}: ${error}`);
+                return null;
+            }
+            await new Promise((resolve) => setTimeout(resolve, 2000 * attempt));
+        }
     }
 };
 // Rebuilt on fallback, so keep it free of side effects.
@@ -45964,7 +45975,9 @@ const formatPullRequestReviewMessage = (payload, comments) => {
       [View Review](${html_url})
       [View Pull Request](https://github.com/${ownerName}/${repoName}/pull/${number})
       `;
-            message = reviewMessage(comments ? (0, review_1.formatCommentList)(comments) : "");
+            message = reviewMessage(comments === null
+                ? (0, review_1.escapeMarkdown)("Inline comments could not be listed, open the review.")
+                : comments ? (0, review_1.formatCommentList)(comments) : "");
             // Telegram rejects more than 4096 characters; a long review text keeps only the count.
             if (comments && message.length > MAX_MESSAGE_LENGTH)
                 message = reviewMessage((0, review_1.formatCommentList)(comments, 0));
@@ -46055,10 +46068,9 @@ const formatTitle = (text) => {
 };
 // Converts GitHub markdown (links, bold, code...) to Telegram MarkdownV2.
 const formatBody = (text) => {
-    const source = text !== null && text !== void 0 ? text : "";
+    const clipped = (0, review_1.clip)(text !== null && text !== void 0 ? text : "", MAX_BODY_LENGTH);
     if (!richText)
-        return (0, review_1.escapeMarkdown)(source);
-    const clipped = source.length > MAX_BODY_LENGTH ? source.slice(0, MAX_BODY_LENGTH) + "…" : source;
+        return (0, review_1.escapeMarkdown)(clipped);
     return (0, telegramify_markdown_1.default)(clipped, "escape").trim();
 };
 run();
@@ -46073,7 +46085,7 @@ run();
 
 // The inline comments of one review, so a review is one Telegram message instead of 1 + N.
 Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.formatLocation = exports.formatCommentList = exports.singleComment = exports.escapeMarkdown = exports.MAX_LISTED_COMMENTS = void 0;
+exports.formatLocation = exports.formatCommentList = exports.clip = exports.singleComment = exports.escapeMarkdown = exports.MAX_LISTED_COMMENTS = void 0;
 exports.MAX_LISTED_COMMENTS = 5;
 const EXCERPT_LENGTH = 150;
 /*Escape markdown characters based on
@@ -46081,7 +46093,7 @@ const EXCERPT_LENGTH = 150;
   ignore pre and code entities as we do not use.
 */
 const escapeMarkdown = (text) => {
-    return text.replace(/([_*\[\]()~`>#+\-=|{}.!])/g, "\\$1");
+    return text.replace(/([\\_*\[\]()~`>#+\-=|{}.!])/g, "\\$1");
 };
 exports.escapeMarkdown = escapeMarkdown;
 // Inside a code entity only ` and \ need escaping.
@@ -46095,7 +46107,16 @@ const singleComment = (review, comments) => {
         : undefined;
 };
 exports.singleComment = singleComment;
-const plainLine = (line) => line.replace(/^[#>\s]+/, "").replace(/\*\*|__|~~|`/g, "").trim();
+// Cuts by code point, so an emoji is never split into a lone surrogate Telegram rejects.
+const clip = (text, length) => {
+    const chars = Array.from(text);
+    return chars.length > length ? chars.slice(0, length).join("") + "…" : text;
+};
+exports.clip = clip;
+// Fences (```suggestion) and HTML comments make poor excerpts, so the first prose line is used.
+const plainLine = (line) => /^\s*(```|<!--)/.test(line)
+    ? ""
+    : line.replace(/^[#>\s]+/, "").replace(/\*\*(\S.*?)\*\*/g, "$1").replace(/~~(\S.*?)~~/g, "$1").replace(/`/g, "").trim();
 // The review comments API has no line numbers, so an entry names the file and links the comment.
 const formatCommentList = (comments, listed = exports.MAX_LISTED_COMMENTS) => {
     if (comments.length === 0)
@@ -46105,7 +46126,7 @@ const formatCommentList = (comments, listed = exports.MAX_LISTED_COMMENTS) => {
         const file = (_a = comment.path.split("/").pop()) !== null && _a !== void 0 ? _a : comment.path;
         // Plain text: a clipped excerpt can't keep its markdown entities balanced.
         const firstLine = (_b = comment.body.split("\n").map(plainLine).find((l) => l)) !== null && _b !== void 0 ? _b : "";
-        const excerpt = firstLine.length > EXCERPT_LENGTH ? firstLine.slice(0, EXCERPT_LENGTH) + "…" : firstLine;
+        const excerpt = (0, exports.clip)(firstLine, EXCERPT_LENGTH);
         return `• [${(0, exports.escapeMarkdown)(file)}](${comment.html_url}) ${(0, exports.escapeMarkdown)(excerpt)}`;
     });
     const more = comments.length - lines.length;
@@ -46167,7 +46188,9 @@ const sendMessage = async (chatId, topicId, message, uri) => {
                 message_thread_id: topicId,
                 text: message,
                 parse_mode: "Markdownv2",
-            });
+            }, 
+            // A stalled connection would otherwise hang until the job's timeout.
+            { timeout: 15000 });
         }
         catch (error) {
             const wait = (0, exports.retryDelay)(error, attempt);
