@@ -2,6 +2,8 @@ import axios from "axios";
 
 const MAX_ATTEMPTS = 5;
 const MAX_WAIT_SECONDS = 60;
+// The calling job has 5 minutes; past this budget a send fails instead of being killed.
+const MAX_TOTAL_WAIT_SECONDS = 120;
 
 /**
  * Seconds to wait before resending, or undefined when the error is final.
@@ -31,6 +33,7 @@ const sendMessage = async (
   message: string,
   uri: string,
 ) => {
+  let waited = 0;
   for (let attempt = 1; ; attempt++) {
     try {
       return await axios.post(
@@ -46,7 +49,8 @@ const sendMessage = async (
       );
     } catch (error) {
       const wait = retryDelay(error, attempt);
-      if (wait === undefined) throw error;
+      if (wait === undefined || waited + wait > MAX_TOTAL_WAIT_SECONDS) throw error;
+      waited += wait;
       const status = axios.isAxiosError(error) ? error.response?.status : undefined;
       console.log(`Telegram send failed (${status ?? "network"}), retrying in ${wait}s`);
       await new Promise((resolve) => setTimeout(resolve, wait * 1000));

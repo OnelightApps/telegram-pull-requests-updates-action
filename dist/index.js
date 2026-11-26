@@ -46154,6 +46154,8 @@ exports.retryDelay = void 0;
 const axios_1 = __importDefault(__nccwpck_require__(7269));
 const MAX_ATTEMPTS = 5;
 const MAX_WAIT_SECONDS = 60;
+// The calling job has 5 minutes; past this budget a send fails instead of being killed.
+const MAX_TOTAL_WAIT_SECONDS = 120;
 /**
  * Seconds to wait before resending, or undefined when the error is final.
  * A 429 says how long to wait (one message a second per chat, 20 a minute per group);
@@ -46181,6 +46183,7 @@ exports.retryDelay = retryDelay;
  */
 const sendMessage = async (chatId, topicId, message, uri) => {
     var _a;
+    let waited = 0;
     for (let attempt = 1;; attempt++) {
         try {
             return await axios_1.default.post(uri, {
@@ -46194,8 +46197,9 @@ const sendMessage = async (chatId, topicId, message, uri) => {
         }
         catch (error) {
             const wait = (0, exports.retryDelay)(error, attempt);
-            if (wait === undefined)
+            if (wait === undefined || waited + wait > MAX_TOTAL_WAIT_SECONDS)
                 throw error;
+            waited += wait;
             const status = axios_1.default.isAxiosError(error) ? (_a = error.response) === null || _a === void 0 ? void 0 : _a.status : undefined;
             console.log(`Telegram send failed (${status !== null && status !== void 0 ? status : "network"}), retrying in ${wait}s`);
             await new Promise((resolve) => setTimeout(resolve, wait * 1000));
