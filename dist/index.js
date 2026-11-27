@@ -45763,15 +45763,6 @@ var __importStar = (this && this.__importStar) || (function () {
         return result;
     };
 })();
-var __awaiter = (this && this.__awaiter) || function (thisArg, _arguments, P, generator) {
-    function adopt(value) { return value instanceof P ? value : new P(function (resolve) { resolve(value); }); }
-    return new (P || (P = Promise))(function (resolve, reject) {
-        function fulfilled(value) { try { step(generator.next(value)); } catch (e) { reject(e); } }
-        function rejected(value) { try { step(generator["throw"](value)); } catch (e) { reject(e); } }
-        function step(result) { result.done ? resolve(result.value) : adopt(result.value).then(fulfilled, rejected); }
-        step((generator = generator.apply(thisArg, _arguments || [])).next());
-    });
-};
 var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
@@ -45781,48 +45772,94 @@ const github = __importStar(__nccwpck_require__(3228));
 const send_message_1 = __importDefault(__nccwpck_require__(717));
 const telegramify_markdown_1 = __importDefault(__nccwpck_require__(4751));
 const axios_1 = __importDefault(__nccwpck_require__(7269));
-function run() {
-    return __awaiter(this, void 0, void 0, function* () {
-        var _a, _b;
+const review_1 = __nccwpck_require__(7491);
+async function run() {
+    var _a, _b;
+    try {
+        const botToken = core.getInput("bot_token");
+        const chatId = core.getInput("chat_id");
+        const topicId = core.getInput("topic_id");
+        if (!botToken || !chatId) {
+            throw new Error("bot_token and chat_id are required");
+        }
+        const uri = `https://api.telegram.org/bot${botToken}/sendMessage`;
+        const token = core.getInput("github_token");
+        const { eventName, payload } = github.context;
+        // Each inline comment also fires its review's event, which lists it (see review.ts).
+        // Only when that list can't be read does the comment go out on its own, as before.
+        if (eventName == "pull_request_review_comment" && payload.action == "created") {
+            const reviewId = payload.comment.pull_request_review_id;
+            if (reviewId && Array.isArray(await reviewComments(token, reviewId, 1))) {
+                console.log(`Comment is part of review ${reviewId}; its review message carries it.`);
+                return;
+            }
+        }
+        const comments = eventName == "pull_request_review" && payload.action == "submitted"
+            ? await reviewComments(token, payload.review.id)
+            : undefined;
+        const buildMessage = () => buildEventMessage(comments);
+        const message = buildMessage();
         try {
-            const botToken = core.getInput("bot_token");
-            const chatId = core.getInput("chat_id");
-            const topicId = core.getInput("topic_id");
-            if (!botToken || !chatId) {
-                throw new Error("bot_token and chat_id are required");
-            }
-            const uri = `https://api.telegram.org/bot${botToken}/sendMessage`;
-            const message = buildMessage();
-            try {
-                yield (0, send_message_1.default)(chatId, topicId, message, uri);
-            }
-            catch (error) {
-                // Telegram rejects broken entities with 400, so resend with plain escaped text.
-                if (!axios_1.default.isAxiosError(error) || ((_a = error.response) === null || _a === void 0 ? void 0 : _a.status) !== 400)
-                    throw error;
-                console.debug("Rich text rejected, resending escaped: ", (_b = error.response) === null || _b === void 0 ? void 0 : _b.data);
-                richText = false;
-                yield (0, send_message_1.default)(chatId, topicId, buildMessage(), uri);
-            }
-            core.debug(`Message sent!`);
-            core.setOutput("Finshed time", new Date().toTimeString());
+            await (0, send_message_1.default)(chatId, topicId, message, uri);
         }
         catch (error) {
-            console.debug(`Error: `, error);
-            if (error instanceof Error)
-                core.setFailed(error.message);
+            // Telegram rejects broken entities with 400, so resend with plain escaped text.
+            if (!axios_1.default.isAxiosError(error) || ((_a = error.response) === null || _a === void 0 ? void 0 : _a.status) !== 400)
+                throw error;
+            console.debug("Rich text rejected, resending escaped: ", (_b = error.response) === null || _b === void 0 ? void 0 : _b.data);
+            richText = false;
+            await (0, send_message_1.default)(chatId, topicId, buildMessage(), uri);
         }
-    });
+        core.debug(`Message sent!`);
+        core.setOutput("Finshed time", new Date().toTimeString());
+    }
+    catch (error) {
+        console.debug(`Error: `, error);
+        if (error instanceof Error)
+            core.setFailed(error.message);
+    }
 }
+// The review's inline comments; undefined when the token has no access (each comment then
+// goes out on its own), null when reading failed otherwise (the comment runs may have skipped).
+const reviewComments = async (token, reviewId, perPage = 100) => {
+    if (!token)
+        return undefined;
+    const octokit = github.getOctokit(token);
+    const params = {
+        ...github.context.repo,
+        pull_number: github.context.payload.pull_request.number,
+        review_id: reviewId,
+        per_page: perPage,
+    };
+    for (let attempt = 1;; attempt++) {
+        try {
+            return perPage < 100
+                ? (await octokit.rest.pulls.listCommentsForReview(params)).data
+                : await octokit.paginate(octokit.rest.pulls.listCommentsForReview, params);
+        }
+        catch (error) {
+            const status = error.status;
+            if (status === 401 || status === 403 || status === 404) {
+                core.warning(`No access to the comments of review ${reviewId}, each is sent on its own: ${error}`);
+                return undefined;
+            }
+            if (attempt >= 3) {
+                core.warning(`Could not read the comments of review ${reviewId}: ${error}`);
+                return null;
+            }
+            await new Promise((resolve) => setTimeout(resolve, 2000 * attempt));
+        }
+    }
+};
 // Rebuilt on fallback, so keep it free of side effects.
-const buildMessage = () => {
+const buildEventMessage = (comments) => {
     if (github.context.eventName == "pull_request") {
         const payload = github.context.payload;
         return formatPullRequestMessage(payload);
     }
     else if (github.context.eventName == "pull_request_review") {
         const payload = github.context.payload;
-        return formatPullRequestReviewMessage(payload);
+        return formatPullRequestReviewMessage(payload, comments);
     }
     else if (github.context.eventName == "pull_request_review_comment") {
         const payload = github.context.payload;
@@ -45840,9 +45877,9 @@ const formatPullRequestMessage = (payload) => {
     const { title, body, draft } = pull_request;
     const prTitle = formatTitle(title);
     const prDescription = formatBody(body);
-    const ownerName = escapeMarkdown(owner.login);
-    const repoName = escapeMarkdown(name);
-    const senderName = escapeMarkdown(sender.login);
+    const ownerName = (0, review_1.escapeMarkdown)(owner.login);
+    const repoName = (0, review_1.escapeMarkdown)(name);
+    const senderName = (0, review_1.escapeMarkdown)(sender.login);
     let message = "";
     switch (action) {
         case "opened":
@@ -45878,7 +45915,7 @@ const formatPullRequestMessage = (payload) => {
             const reviewer = requested_reviewers[0];
             const { name } = reviewer;
             const { login } = reviewer;
-            const reviewerName = escapeMarkdown((_a = name !== null && name !== void 0 ? name : login) !== null && _a !== void 0 ? _a : "");
+            const reviewerName = (0, review_1.escapeMarkdown)((_a = name !== null && name !== void 0 ? name : login) !== null && _a !== void 0 ? _a : "");
             message = `📝 *Review Requested*  \\\#${number}
       *PR Title:* ${prTitle}
       *By:* [${senderName}](https://github.com/${senderName})
@@ -45903,28 +45940,47 @@ const formatPullRequestMessage = (payload) => {
     }
 };
 // Format the pull request review message based on the event type, new pull or review request.
-const formatPullRequestReviewMessage = (payload) => {
+const formatPullRequestReviewMessage = (payload, comments) => {
     const { action, pull_request, repository, sender, review } = payload;
     const { name, owner } = repository;
     const { title, number, draft } = pull_request;
     const { body, html_url, state } = review;
     const prTitle = formatTitle(title);
-    const ownerName = escapeMarkdown(owner.login);
-    const repoName = escapeMarkdown(name);
-    const senderName = escapeMarkdown(sender.login);
-    const prState = escapeMarkdown(state);
+    const ownerName = (0, review_1.escapeMarkdown)(owner.login);
+    const repoName = (0, review_1.escapeMarkdown)(name);
+    const senderName = (0, review_1.escapeMarkdown)(sender.login);
+    const prState = (0, review_1.escapeMarkdown)(state);
     const reviewText = formatBody(body);
     let message = "";
     switch (action) {
         case "submitted":
-            message = `✅ *Review submitted* \\\#${number}
+            const single = comments && (0, review_1.singleComment)(review, comments);
+            if (single) {
+                message = `${single.in_reply_to_id ? "💬 *Reply*" : "📝 *New comment*"} \\\#${number}
+      *PR Title:* ${prTitle}
+      *By:* [${senderName}](https://github.com/${senderName})
+      *File:* ${(0, review_1.formatLocation)(single)}
+      *Text:* ${formatBody(single.body)}
+      [View Comment](${single.html_url})
+      [View Pull Request](https://github.com/${ownerName}/${repoName}/pull/${number})
+      `;
+                console.debug("Message: ", message);
+                return message;
+            }
+            const reviewMessage = (commentList) => `✅ *Review submitted* \\\#${number}
       *PR Title:* ${prTitle}
       *By:* [${senderName}](https://github.com/${senderName})
       *Status: ${prState}*
-      *Text:* ${reviewText}
+      *Text:* ${reviewText}${commentList ? "\n" + commentList : ""}
       [View Review](${html_url})
       [View Pull Request](https://github.com/${ownerName}/${repoName}/pull/${number})
       `;
+            message = reviewMessage(comments === null
+                ? (0, review_1.escapeMarkdown)("Inline comments could not be listed, open the review.")
+                : comments ? (0, review_1.formatCommentList)(comments) : "");
+            // Telegram rejects more than 4096 characters; a long review text keeps only the count.
+            if (comments && message.length > MAX_MESSAGE_LENGTH)
+                message = reviewMessage((0, review_1.formatCommentList)(comments, 0));
             console.debug("Message: ", message);
             return message;
         case "dismissed":
@@ -45957,9 +46013,9 @@ const formatPullRequestReviewCommentMessage = (payload) => {
     const { title, number } = pull_request;
     const { body, html_url } = comment;
     const prTitle = formatTitle(title);
-    const ownerName = escapeMarkdown(owner.login);
-    const repoName = escapeMarkdown(name);
-    const senderName = escapeMarkdown(sender.login);
+    const ownerName = (0, review_1.escapeMarkdown)(owner.login);
+    const repoName = (0, review_1.escapeMarkdown)(name);
+    const senderName = (0, review_1.escapeMarkdown)(sender.login);
     const commentText = formatBody(body);
     let message = "";
     switch (action) {
@@ -45998,33 +46054,89 @@ const formatPullRequestReviewCommentMessage = (payload) => {
 let richText = true;
 // Leaves room under Telegram's 4096 limit for the rest of the message and escaping growth.
 const MAX_BODY_LENGTH = 1500;
+const MAX_MESSAGE_LENGTH = 4000;
 // GitHub titles have no markdown except `code`, so only that is kept as an entity.
 const formatTitle = (text) => {
     if (!richText)
-        return escapeMarkdown(text);
+        return (0, review_1.escapeMarkdown)(text);
     return text
         .split(/(`[^`]+`)/)
         .map((part) => /^`[^`]+`$/.test(part)
         ? "`" + part.slice(1, -1).replace(/([\\`])/g, "\\$1") + "`"
-        : escapeMarkdown(part))
+        : (0, review_1.escapeMarkdown)(part))
         .join("");
 };
 // Converts GitHub markdown (links, bold, code...) to Telegram MarkdownV2.
 const formatBody = (text) => {
-    const source = text !== null && text !== void 0 ? text : "";
+    const clipped = (0, review_1.clip)(text !== null && text !== void 0 ? text : "", MAX_BODY_LENGTH);
     if (!richText)
-        return escapeMarkdown(source);
-    const clipped = source.length > MAX_BODY_LENGTH ? source.slice(0, MAX_BODY_LENGTH) + "…" : source;
+        return (0, review_1.escapeMarkdown)(clipped);
     return (0, telegramify_markdown_1.default)(clipped, "escape").trim();
 };
+run();
+
+
+/***/ }),
+
+/***/ 7491:
+/***/ ((__unused_webpack_module, exports) => {
+
+"use strict";
+
+// The inline comments of one review, so a review is one Telegram message instead of 1 + N.
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.formatLocation = exports.formatCommentList = exports.clip = exports.singleComment = exports.escapeMarkdown = exports.MAX_LISTED_COMMENTS = void 0;
+exports.MAX_LISTED_COMMENTS = 5;
+const EXCERPT_LENGTH = 150;
 /*Escape markdown characters based on
   https://core.telegram.org/bots/api#markdownv2-style
   ignore pre and code entities as we do not use.
 */
 const escapeMarkdown = (text) => {
-    return text.replace(/([_*\[\]()~`>#+\-=|{}.!])/g, "\\$1");
+    return text.replace(/([\\_*\[\]()~`>#+\-=|{}.!])/g, "\\$1");
 };
-run();
+exports.escapeMarkdown = escapeMarkdown;
+// Inside a code entity only ` and \ need escaping.
+const escapeCode = (text) => text.replace(/([\\`])/g, "\\$1");
+// A reply in a thread, or "Add single comment", is a review with no text and one comment:
+// send it as that comment, which is what the reader cares about.
+const singleComment = (review, comments) => {
+    var _a;
+    return comments.length === 1 && !((_a = review.body) !== null && _a !== void 0 ? _a : "").trim() && review.state.toLowerCase() === "commented"
+        ? comments[0]
+        : undefined;
+};
+exports.singleComment = singleComment;
+// Cuts by code point, so an emoji is never split into a lone surrogate Telegram rejects.
+const clip = (text, length) => {
+    const chars = Array.from(text);
+    return chars.length > length ? chars.slice(0, length).join("") + "…" : text;
+};
+exports.clip = clip;
+// Fences (```suggestion) and HTML comments make poor excerpts, so the first prose line is used.
+const plainLine = (line) => /^\s*(```|<!--)/.test(line)
+    ? ""
+    : line.replace(/^[#>\s]+/, "").replace(/\*\*(\S.*?)\*\*/g, "$1").replace(/~~(\S.*?)~~/g, "$1").replace(/`/g, "").trim();
+// The review comments API has no line numbers, so an entry names the file and links the comment.
+const formatCommentList = (comments, listed = exports.MAX_LISTED_COMMENTS) => {
+    if (comments.length === 0)
+        return "";
+    const lines = comments.slice(0, listed).map((comment) => {
+        var _a, _b;
+        const file = (_a = comment.path.split("/").pop()) !== null && _a !== void 0 ? _a : comment.path;
+        // Plain text: a clipped excerpt can't keep its markdown entities balanced.
+        const firstLine = (_b = comment.body.split("\n").map(plainLine).find((l) => l)) !== null && _b !== void 0 ? _b : "";
+        const excerpt = (0, exports.clip)(firstLine, EXCERPT_LENGTH);
+        return `• [${(0, exports.escapeMarkdown)(file)}](${comment.html_url}) ${(0, exports.escapeMarkdown)(excerpt)}`;
+    });
+    const more = comments.length - lines.length;
+    if (more > 0)
+        lines.push((0, exports.escapeMarkdown)(`…and ${more} more`));
+    return `*Comments \\(${comments.length}\\):*\n${lines.join("\n")}`;
+};
+exports.formatCommentList = formatCommentList;
+const formatLocation = (comment) => "`" + escapeCode(comment.path) + "`";
+exports.formatLocation = formatLocation;
 
 
 /***/ }),
@@ -46038,20 +46150,61 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.retryDelay = void 0;
 const axios_1 = __importDefault(__nccwpck_require__(7269));
+const MAX_ATTEMPTS = 5;
+const MAX_WAIT_SECONDS = 60;
+// The calling job has 5 minutes; past this budget a send fails instead of being killed.
+const MAX_TOTAL_WAIT_SECONDS = 120;
+/**
+ * Seconds to wait before resending, or undefined when the error is final.
+ * A 429 says how long to wait (one message a second per chat, 20 a minute per group);
+ * a network error or 5xx is retried with a short backoff.
+ */
+const retryDelay = (error, attempt) => {
+    var _a, _b, _c, _d;
+    if (attempt >= MAX_ATTEMPTS || !axios_1.default.isAxiosError(error))
+        return undefined;
+    const status = (_a = error.response) === null || _a === void 0 ? void 0 : _a.status;
+    if (status === 429) {
+        const after = Number((_d = (_c = (_b = error.response) === null || _b === void 0 ? void 0 : _b.data) === null || _c === void 0 ? void 0 : _c.parameters) === null || _d === void 0 ? void 0 : _d.retry_after);
+        return Math.min((Number.isFinite(after) && after > 0 ? after : 5) + 1, MAX_WAIT_SECONDS);
+    }
+    if (status === undefined || status >= 500)
+        return 3 * attempt;
+    return undefined;
+};
+exports.retryDelay = retryDelay;
 /**
  * Send a Telegram message on pull request event.
  * @param chatId id of targeted chat gorup or channel.
  * @param message the message to be sent.
  * @param uri telegram api to send request to.
  */
-const sendMessage = (chatId, topicId, message, uri) => {
-    return axios_1.default.post(uri, {
-        chat_id: chatId,
-        message_thread_id: topicId,
-        text: message,
-        parse_mode: "Markdownv2",
-    });
+const sendMessage = async (chatId, topicId, message, uri) => {
+    var _a;
+    let waited = 0;
+    for (let attempt = 1;; attempt++) {
+        try {
+            return await axios_1.default.post(uri, {
+                chat_id: chatId,
+                message_thread_id: topicId,
+                text: message,
+                parse_mode: "Markdownv2",
+            }, 
+            // A stalled connection would otherwise hang until the job's timeout.
+            { timeout: 15000 });
+        }
+        catch (error) {
+            const wait = (0, exports.retryDelay)(error, attempt);
+            if (wait === undefined || waited + wait > MAX_TOTAL_WAIT_SECONDS)
+                throw error;
+            waited += wait;
+            const status = axios_1.default.isAxiosError(error) ? (_a = error.response) === null || _a === void 0 ? void 0 : _a.status : undefined;
+            console.log(`Telegram send failed (${status !== null && status !== void 0 ? status : "network"}), retrying in ${wait}s`);
+            await new Promise((resolve) => setTimeout(resolve, wait * 1000));
+        }
+    }
 };
 exports["default"] = sendMessage;
 

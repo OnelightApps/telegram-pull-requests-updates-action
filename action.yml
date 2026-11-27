@@ -11,9 +11,13 @@ inputs:
   bot_token:
     required: true
     description: 'Telegram bot token'
+  github_token:
+    required: false
+    default: ${{ github.token }}
+    description: 'Reads a review''s inline comments, so a review is sent as one message. Without access each comment is sent on its own.'
 branding:
   icon: 'send'
   color: 'gray-dark'
 runs:
-  using: 'node20'
+  using: 'node24'
   main: 'dist/index.js'
